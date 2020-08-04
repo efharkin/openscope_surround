@@ -2,7 +2,7 @@
 __all__ = (
     "RawFluorescence",
     "TrialFluorescence",
-    "EyeTracking",
+    "RawEyeTracking",
     "TrialEyeTracking",
     "RunningSpeed",
     "robust_range",
@@ -890,6 +890,11 @@ class EyeTracking(TimeseriesDataset):
 
         return window
 
+
+class RawEyeTracking(TimeseriesDataset):
+    def __init__(self, tracked_attributes: dict, timestep_width: float):
+        super().__init__(tracked_attributes, timestep_width)
+
     def cut_by_trials(
         self,
         trial_timetable,
@@ -1161,6 +1166,12 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
                 ]
 
         return trial_std
+
+    def plot(self, ax=None, **pltargs):
+        raise NotImplementedError
+
+    def apply_quality_control(self):
+        raise NotImplementedError
 
 
 class RunningSpeed(TimeseriesDataset):

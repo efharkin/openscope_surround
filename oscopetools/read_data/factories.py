@@ -25,7 +25,7 @@ import h5py
 import pandas as pd
 import numpy as np
 
-from .dataset_objects import RawFluorescence, EyeTracking, RunningSpeed
+from .dataset_objects import RawFluorescence, RawEyeTracking, RunningSpeed
 from .conditions import CenterSurroundStimulus, SetMembershipError
 
 FRAME_RATE = 30.0  # Assumed frame rate in Hz. TODO: load from a file
@@ -221,4 +221,4 @@ def get_stimulus_epochs(file_path, session_type):
 
 def get_eye_tracking(file_path):
     raw_eyetracking_dataset = pd.read_hdf(file_path, 'eye_tracking')
-    return EyeTracking(raw_eyetracking_dataset, 1.0 / FRAME_RATE)
+    return RawEyeTracking(raw_eyetracking_dataset, 1.0 / FRAME_RATE)
