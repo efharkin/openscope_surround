@@ -48,10 +48,13 @@ def correct_LSN_stim_by_eye_pos(
         The reference y- and x-positions used for correcting the LSN stimulus array.
     """
     eye_trials = eye_tracking.cut_by_trials(LSN_stim_table)
-    eye_trial_mean = eye_trials.trial_mean(within_trial=True, ignore_nan=True)
+    eye_mean_pos_within_trial = eye_trials.time_mean(ignore_nan=True)
     yx_eye_pos = np.squeeze(
         np.dstack(
-            [eye_trial_mean.data.y_pos_deg, eye_trial_mean.data.x_pos_deg]
+            [
+                eye_mean_pos_within_trial.data.y_pos_deg,
+                eye_mean_pos_within_trial.data.x_pos_deg
+            ]
         )
     )
     if yx_ref is None:
