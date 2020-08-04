@@ -305,6 +305,16 @@ class TimeseriesDataset(Dataset):
 
         return min(frame_num, len(self) - 1)
 
+    @abstractmethod
+    def time_mean(self, ignore_nan=False):
+        """Get the mean of the timeseries over time."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def time_std(self, ignore_nan=False):
+        """Get the std of the timeseries over time."""
+        raise NotImplementedError
+
 
 class TrialDataset(Dataset):
     """Abstract base class for datasets that are divided into trials.
@@ -505,6 +515,36 @@ class Fluorescence(TimeseriesDataset):
             time_slice = self.data[..., start:stop]
 
         fluo_copy.data = time_slice.copy()
+        return fluo_copy
+
+    def time_mean(self, ignore_nan=False):
+        """Mean of the fluorescence signal for each time period."""
+        fluo_copy = self.copy(read_only=True)
+
+        if ignore_nan:
+            fluo_copy.data = np.nanmean(
+                fluo_copy.data, axis=fluo_copy.data.ndim - 1
+            )[..., np.newaxis]
+        else:
+            fluo_copy.data = np.mean(
+                fluo_copy.data, axis=fluo_copy.data.ndim - 1
+            )[..., np.newaxis]
+
+        return fluo_copy
+
+    def time_std(self, ignore_nan=False):
+        """Standard deviation of the fluorescence signal for each time period."""
+        fluo_copy = self.copy(read_only=True)
+
+        if ignore_nan:
+            fluo_copy.data = np.nanstd(
+                fluo_copy.data, axis=fluo_copy.data.ndim - 1
+            )[..., np.newaxis]
+        else:
+            fluo_copy.data = np.std(
+                fluo_copy.data, axis=fluo_copy.data.ndim - 1
+            )[..., np.newaxis]
+
         return fluo_copy
 
     def copy(self, read_only=False):
@@ -890,6 +930,36 @@ class EyeTracking(TimeseriesDataset):
 
         return window
 
+    def time_mean(self, ignore_nan=False):
+        """Mean of the eye tracking data for each time period."""
+        eyetracking_copy = self.copy()
+
+        if ignore_nan:
+            eyetracking_copy.data = np.nanmean(
+                eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
+            )[..., np.newaxis]
+        else:
+            eyetracking_copy.data = np.mean(
+                eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
+            )[..., np.newaxis]
+
+        return eyetracking_copy
+
+    def time_std(self, ignore_nan=False):
+        """Standard deviation of the eye tracking data for each time period."""
+        eyetracking_copy = self.copy()
+
+        if ignore_nan:
+            eyetracking_copy.data = np.nanstd(
+                eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
+            )[..., np.newaxis]
+        else:
+            eyetracking_copy.data = np.std(
+                eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
+            )[..., np.newaxis]
+
+        return eyetracking_copy
+
 
 class RawEyeTracking(TimeseriesDataset):
     def __init__(self, tracked_attributes: dict, timestep_width: float):
@@ -1099,7 +1169,7 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
         return trial_subset
 
     def trial_mean(self, ignore_nan=False):
-        """Get the mean eye parameters within or across trials.
+        """Get the mean eye parameters across trials.
 
         Parameters
         ----------
@@ -1114,6 +1184,8 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
         See Also
         --------
         `trial_std()`
+        `time_std()`
+        `time_mean()`
 
         """
         trial_mean = self.copy()
@@ -1133,7 +1205,7 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
         return trial_mean
 
     def trial_std(self, ignore_nan=False):
-        """Get the standard deviation of the eye parameters within or across trials.
+        """Get the standard deviation of the eye parameters across trials.
 
         Parameters
         ----------
@@ -1143,12 +1215,14 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
         Returns
         -------
         trial_std : TrialEyeTracking
-            A new `TrialEyeTracking` object with the standard deviation within/
+            A new `TrialEyeTracking` object with the standard deviation
             across trials.
 
         See Also
         --------
         `trial_mean()`
+        `time_mean()`
+        `time_std()`
 
         """
         trial_std = self.copy()
@@ -1195,6 +1269,38 @@ class RunningSpeed(TimeseriesDataset):
             window.data = window.data[start, :].copy()
 
         return window
+
+    def time_mean(self, ignore_nan=False):
+        """Mean of the eye tracking data for each time period."""
+        raise NotImplementedError('Implementation may be incorrect')
+        running_copy = self.copy()
+
+        if ignore_nan:
+            running_copy.data = np.nanmean(
+                running_copy.data, axis=running_copy.data.ndim - 1
+            )[..., np.newaxis]
+        else:
+            running_copy.data = np.mean(
+                running_copy.data, axis=running_copy.data.ndim - 1
+            )[..., np.newaxis]
+
+        return running_copy
+
+    def time_std(self, ignore_nan=False):
+        """Standard deviation of the eye tracking data for each time period."""
+        raise NotImplementedError('Implementation may be incorrect')
+        running_copy = self.copy()
+
+        if ignore_nan:
+            running_copy.data = np.nanstd(
+                running_copy.data, axis=running_copy.data.ndim - 1
+            )[..., np.newaxis]
+        else:
+            running_copy.data = np.std(
+                running_copy.data, axis=running_copy.data.ndim - 1
+            )[..., np.newaxis]
+
+        return running_copy
 
     def plot(self, robust_range_=False, ax=None, **pltargs):
         if ax is None:
