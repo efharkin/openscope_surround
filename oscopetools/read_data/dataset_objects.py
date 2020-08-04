@@ -3,12 +3,14 @@ __all__ = (
     "RawFluorescence",
     "TrialFluorescence",
     "EyeTracking",
+    "TrialEyeTracking",
     "RunningSpeed",
     "robust_range",
 )
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
+from types import MappingProxyType
 import warnings
 
 import numpy as np
@@ -816,46 +818,75 @@ class TrialFluorescence(Fluorescence, TrialDataset):
 
 
 class EyeTracking(TimeseriesDataset):
-    _eye_area_name = "eye_area"
-    _pupil_area_name = "pupil_area"
-    _x_pos_name = "x_pos_deg"
-    _y_pos_name = "y_pos_deg"
+    _DATA_MEMBER_NAMES = ["eye_area", "pupil_area", "x_pos_deg", "y_pos_deg"]
 
-    def __init__(
-        self, tracked_attributes: pd.DataFrame, timestep_width: float
-    ):
+    def __init__(self, tracked_attributes: dict, timestep_width: float):
         super().__init__(timestep_width)
-        self.data = pd.DataFrame(tracked_attributes)
+
+        self._data = {}
+        for key in self._DATA_MEMBER_NAMES:
+            self._data[key] = np.asarray(tracked_attributes[key])
+
+        # Add `self.data` as a read-only interface to `_data`
+        self.data = MappingProxyType(self._data)
+
+        # Check that `_data` has been initialized properly and raise error if not
+        try:
+            self._assert_data_shapes_equal()
+        except RuntimeError:
+            raise ValueError(
+                'Expected attributes in `tracked_attributes` to all have the same shape'
+            )
+
+    def __copy__(self):
+        """Return a shallow copy of self."""
+        cls = self.__class__
+        new_obj = cls.__new__(cls)
+
+        for key, val in self.__dict__.items():
+            if key != "data":
+                setattr(new_obj, key, val)
+
+        new_obj.data = MappingProxyType(new_obj._data)
+
+        return new_obj
+
+    def __deepcopy__(self, memo):
+        """Return a deep copy of self."""
+        cls = self.__class__
+        new_obj = cls.__new__(cls)
+
+        memo[id(self)] = new_obj
+
+        for key, val in self.__dict__.items():
+            if key != "data":
+                setattr(new_obj, key, deepcopy(val, memo))
+
+        new_obj.data = MappingProxyType(new_obj._data)
+
+        return new_obj
+
+    def _assert_data_shapes_equal(self):
+        """Raise an error if not all attrs of `data` have the same length."""
+        shapes = [np.shape(data_item) for data_item in self.data.values()]
+        if not all([shape_ == shapes[0] for shape_ in shapes]):
+            raise RuntimeError('Not all data attributes have same length')
 
     @property
     def num_timesteps(self):
         """Number of timesteps in EyeTracking dataset."""
-        if issubclass(type(self), TrialDataset):
-            if self._within_trial:
-                return 1
-            else:
-                return len(self.data.iloc[0, 0])
-        else:
-            return self.data.shape[0]
+        self._assert_data_shapes_equal()
+        return self.data["eye_area"].shape[-1]
 
     def get_frame_range(self, start: int, stop: int = None):
         window = self.copy()
-        if stop is not None:
-            if issubclass(type(self), TrialDataset):
-                if not self._within_trial:
-                    window.data = window.data.applymap(
-                        lambda x: x[start:stop]
-                    ).copy()
+        for key, val in self.data.values():
+            if stop is None:
+                window._data[key] = np.atleast_1d(val[..., start])
             else:
-                window.data = window.data.iloc[start:stop, :].copy()
-        else:
-            if issubclass(type(self), TrialDataset):
-                if not self._within_trial:
-                    window.data = window.data.applymap(
-                        lambda x: x[start : start + 1]
-                    ).copy()
-            else:
-                window.data = window.data.iloc[start, :].copy()
+                window._data[key] = np.atleast_1d(val[..., start:stop])
+
+        window._assert_data_shapes_equal()
 
         return window
 
@@ -886,14 +917,8 @@ class EyeTracking(TimeseriesDataset):
         if (num_baseline_frames is None) or (num_baseline_frames < 0):
             num_baseline_frames = 0
 
-        # Slice one EyeTracking parameter up into trials.
-        # 4 columns in total: col_0, col_1, col_2, and col_3,
-        # corresponding to eye_area, pupil_area, x_pos_deg, and y_pos_deg,
-        # Noneed to worry even if the columns are switched.
-        col_0 = []
-        col_1 = []
-        col_2 = []
-        col_3 = []
+        trial_data = {key: [] for key in self._DATA_MEMBER_NAMES}
+
         num_frames = []
         for start, end in zip(
             trial_timetable["Start"], trial_timetable["End"]
@@ -905,20 +930,18 @@ class EyeTracking(TimeseriesDataset):
                     " to be ints, got {} and {} instead".format(start, end)
                 )
             start = max(int(start) - num_baseline_frames, 0)
+
+            # Optionally, pad the end of the trial with a post-trial baseline
             if both_ends_baseline:
                 end = int(end) + num_baseline_frames
             else:
                 end = int(end)
 
-            col_0.append(self.data.iloc[start:end, 0].values)
-            col_1.append(self.data.iloc[start:end, 1].values)
-            col_2.append(self.data.iloc[start:end, 2].values)
-            col_3.append(self.data.iloc[start:end, 3].values)
-            num_frames.append(end - start)
+            # Append data from this trial
+            for key in trial_data:
+                trial_data[key].append(self.data[start:end])
 
-        # Create a new pd.DataFrame with trials as rows
-        list_of_tuples = list(zip(col_0, col_1, col_2, col_3))
-        trials = pd.DataFrame(list_of_tuples, columns=self.data.columns)
+            num_frames.append(end - start)
 
         # Truncate all trials to the same length if necessary
         min_num_frames = min(num_frames)
@@ -929,7 +952,10 @@ class EyeTracking(TimeseriesDataset):
                     min_num_frames, max(num_frames)
                 )
             )
-            trials = trials.applymap(lambda x: x[:min_num_frames])
+            for key in trial_data:
+                trial_data[key] = [
+                    tr[:min_num_frames] for tr in trial_data[key]
+                ]
 
         # Try to get a vector of trial numbers
         try:
@@ -966,13 +992,13 @@ class EyeTracking(TimeseriesDataset):
         ax = super().plot(ax, **pltargs)
 
         # Check whether the `channel` argument is valid
-        if channel not in self.data.columns and channel != "position":
+        if channel not in self.data and channel != "position":
             raise ValueError(
                 "Got unrecognized channel `{}`, expected one of "
-                "{} or `position`".format(channel, self.data.columns.tolist())
+                "{} or `position`".format(channel, self.data.keys())
             )
 
-        if channel in self.data.columns:
+        if channel in self.data:
             if robust_range_:
                 ax.axhspan(
                     *robust_range(
@@ -1000,8 +1026,8 @@ class EyeTracking(TimeseriesDataset):
 
         elif channel == "position":
             if pltargs.pop("style", None) in ["contour", "density"]:
-                x = self.data[self._x_pos_name]
-                y = self.data[self._y_pos_name]
+                x = self.data["x_pos_deg"]
+                y = self.data["y_pos_deg"]
                 mask = np.isnan(x) | np.isnan(y)
                 if any(mask):
                     warnings.warn(
@@ -1011,22 +1037,20 @@ class EyeTracking(TimeseriesDataset):
                 sns.kdeplot(x[~mask], y[~mask], ax=ax, **pltargs)
             else:
                 ax.plot(
-                    self.data[self._x_pos_name],
-                    self.data[self._y_pos_name],
-                    **pltargs,
+                    self.data["x_pos_deg"], self.data["y_pos_deg"], **pltargs,
                 )
 
             if robust_range_:
                 # Set limits based on approx. data range, excluding outliers
                 ax.set_ylim(
                     robust_range(
-                        self.data[self._y_pos_name],
+                        self.data["y_pos_deg"],
                         half_width=ROBUST_PLOT_RANGE_DEFAULT_HALF_WIDTH,
                     )
                 )
                 ax.set_xlim(
                     robust_range(
-                        self.data[self._x_pos_name],
+                        self.data["x_pos_deg"],
                         half_width=ROBUST_PLOT_RANGE_DEFAULT_HALF_WIDTH,
                     )
                 )
@@ -1050,39 +1074,37 @@ class EyeTracking(TimeseriesDataset):
 class TrialEyeTracking(EyeTracking, TrialDataset):
     """EyeTracking timeseries divided into trials."""
 
-    def __init__(self, eye_tracking_df, trial_num, timestep_width):
-        eye_tracking_df = pd.DataFrame(eye_tracking_df)
-        assert eye_tracking_df.ndim == 2
-        assert eye_tracking_df.shape[0] == len(trial_num)
+    def __init__(self, tracked_attributes: dict, trial_num, timestep_width):
+        for key in self._DATA_MEMBER_NAMES:
+            assert np.ndim(tracked_attributes[key]) == 2
+            assert np.shape(tracked_attributes[key])[0] == len(trial_num)
 
-        super().__init__(eye_tracking_df, timestep_width)
+        super().__init__(tracked_attributes, timestep_width)
 
         self._baseline_duration = 0
         self._both_ends_baseline = False
         self._trial_num = np.asarray(trial_num)
-        self._within_trial = False
 
     def _get_trials_from_mask(self, mask):
         trial_subset = self.copy()
         trial_subset._trial_num = trial_subset._trial_num[mask].copy()
-        trial_subset.data = trial_subset.data[mask].copy()
+        for key in self.data.keys():
+            np.atleast_2d(trial_subset._data[key][mask, :].copy())
 
         return trial_subset
 
-    def trial_mean(self, within_trial=True, ignore_nan=False):
+    def trial_mean(self, ignore_nan=False):
         """Get the mean eye parameters within or across trials.
 
         Parameters
         ----------
-        within_trial : bool, default True
-            Whether to compute within_trial_mean or across_trial_mean.
         ignore_nan : bool, default False
             Whether to return the `mean` or `nanmean`.
 
         Returns
         -------
         trial_mean : TrialEyeTracking
-            A new `TrialEyeTracking` object with the mean within/across trials.
+            A new `TrialEyeTracking` object with the mean across trials.
 
         See Also
         --------
@@ -1090,31 +1112,26 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
 
         """
         trial_mean = self.copy()
-        if within_trial:
-            trial_mean._within_trial = True
-        else:
-            trial_mean._trial_num = np.asarray([np.nan])
+        trial_mean._trial_num = np.asarray([np.nan])
 
         if ignore_nan:
-            if within_trial:
-                trial_mean.data = self.data.applymap(np.nanmean)
-            else:
-                trial_mean.data = self._across_trials_operation(np.nanmean)
+            for key in trial_mean._data:
+                trial_mean._data[key] = trial_mean._data[key].mean(axis=0)[
+                    np.newaxis, :
+                ]
         else:
-            if within_trial:
-                trial_mean.data = self.data.applymap(np.mean)
-            else:
-                trial_mean.data = self._across_trials_operation(np.mean)
+            for key in trial_mean._data:
+                trial_mean._data[key] = np.nanmean(
+                    trial_mean._data[key], axis=0
+                )[np.newaxis, :]
 
         return trial_mean
 
-    def trial_std(self, within_trial=True, ignore_nan=False):
+    def trial_std(self, ignore_nan=False):
         """Get the standard deviation of the eye parameters within or across trials.
 
         Parameters
         ----------
-        within_trial : bool, default True
-            Whether to compute within_trial_std or across_trial_std.
         ignore_nan : bool, default False
             Whether to return the `std` or `nanstd`.
 
@@ -1130,49 +1147,20 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
 
         """
         trial_std = self.copy()
-        if within_trial:
-            trial_std._within_trial = True
-        else:
-            trial_std._trial_num = np.asarray([np.nan])
+        trial_std._trial_num = np.asarray([np.nan])
 
         if ignore_nan:
-            if within_trial:
-                trial_std.data = self.data.applymap(np.nanstd)
-            else:
-                trial_std.data = self._across_trials_operation(np.nanstd)
+            for key in trial_std._data:
+                trial_std._data[key] = trial_std._data[key].std(axis=0)[
+                    np.newaxis, :
+                ]
         else:
-            if within_trial:
-                trial_std.data = self.data.applymap(np.std)
-            else:
-                trial_std.data = self._across_trials_operation(np.std)
+            for key in trial_std._data:
+                trial_std._data[key] = np.nanstd(trial_std._data[key], axis=0)[
+                    np.newaxis, :
+                ]
 
         return trial_std
-
-    def _across_trials_operation(self, func):
-        """Perform operation across trials (axis=0) for the pd.DataFrame data.
-        
-        Parameters
-        ----------
-        func : function
-            Function for performing the operation along axis 0.
-            
-        Returns
-        -------
-        func_df : pd.DataFrame
-            Dataframe that contains the results.
-        
-        """
-        trials = []
-        for i in range(self.data.shape[0]):
-            eye_param = []
-            for j in range(self.data.shape[1]):
-                eye_param.append(self.data.iloc[i, j].tolist())
-            trials.append(eye_param)
-        trials = np.asarray(trials)
-        func_arr = func(trials, axis=0)
-        eye_param_lst = [list(func_arr)]
-        func_df = pd.DataFrame(eye_param_lst, columns=self.data.columns)
-        return func_df
 
 
 class RunningSpeed(TimeseriesDataset):
