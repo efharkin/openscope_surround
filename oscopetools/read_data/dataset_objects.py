@@ -16,7 +16,6 @@ import warnings
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-import pandas as pd
 
 from .doorman import Unlockable, LockError
 
@@ -1150,11 +1149,11 @@ class RawEyeTracking(EyeTracking):
                     "Could not get trial_num from trial_timetable. "
                     "Falling back to arange."
                 )
-                trial_num = np.arange(0, len(trials))
+                trial_num = np.arange(0, len(num_frames))
 
         # Construct TrialEyeTracking and return it.
         trial_eyetracking = TrialEyeTracking(
-            trials, trial_num, self.timestep_width,
+            trial_data, trial_num, self.timestep_width,
         )
         trial_eyetracking._baseline_duration = (
             num_baseline_frames * self.timestep_width
@@ -1163,7 +1162,7 @@ class RawEyeTracking(EyeTracking):
 
         # Check that trial_eyetracking was constructed correctly.
         assert trial_eyetracking.num_timesteps == min_num_frames
-        assert trial_eyetracking.num_trials == len(trials)
+        assert trial_eyetracking.num_trials == len(num_frames)
 
         return trial_eyetracking
 
@@ -1272,7 +1271,7 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
 
         trial_subset._trial_num = trial_subset._trial_num[mask].copy()
         for key in self.data.keys():
-            np.atleast_2d(trial_subset._data[key][mask, :].copy())
+            trial_subset._data[key] = np.atleast_2d(trial_subset._data[key][mask, :].copy())
 
         return trial_subset
 

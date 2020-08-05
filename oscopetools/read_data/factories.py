@@ -51,7 +51,7 @@ def get_dff_traces(file_path):
     f.close()
 
     fluorescence_dataset = RawFluorescence(dff, 1.0 / FRAME_RATE)
-    fluorescence_dataset.is_dff = True
+    fluorescence_dataset._is_dff = True
 
     return fluorescence_dataset
 
@@ -75,7 +75,7 @@ def get_raw_traces(file_path):
     f.close()
 
     fluorescence_dataset = RawFluorescence(raw, 1.0 / FRAME_RATE)
-    fluorescence_dataset.is_dff = False
+    fluorescence_dataset._is_dff = False
 
     return fluorescence_dataset
 
@@ -162,9 +162,6 @@ def get_stimulus_table(file_path, stimulus):
                 )
             )
 
-        print(len(center_surround_objects))
-        print(len(invalid_rows))
-        print(df.shape[0])
         df.drop(index=invalid_rows, inplace=True)
         df['center_surround'] = center_surround_objects
         df.drop(
