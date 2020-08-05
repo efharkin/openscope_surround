@@ -18,6 +18,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from .doorman import Unlockable, LockError
+
 
 def _stripnan(values):
     values_arr = np.asarray(values).flatten()
@@ -438,7 +440,7 @@ class TrialDataset(Dataset):
         raise NotImplementedError
 
 
-class Fluorescence(TimeseriesDataset):
+class Fluorescence(TimeseriesDataset, Unlockable):
     """A fluorescence timeseries.
 
     Any fluorescence timeseries. May have one or more cells and one or more
@@ -449,11 +451,60 @@ class Fluorescence(TimeseriesDataset):
     def __init__(self, fluorescence_array, timestep_width):
         super().__init__(timestep_width)
 
-        self.data = np.asarray(fluorescence_array)
-        self.cell_vec = np.arange(0, self.num_cells)
-        self.is_z_score = False
-        self.is_dff = False
-        self.is_positive_clipped = False
+        self._data = np.asarray(fluorescence_array)
+        self._cell_vec = np.arange(0, self.num_cells)
+        self.__locked = False
+        self._is_z_score = False
+        self._is_dff = False
+        self._is_positive_clipped = False
+
+        self._lock()
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        if self.__locked:
+            raise LockError('{} instance is currently locked to prevent ''accidental modification ''(see `Unlockable` and `unlock()` for details)'.format(type(self)))
+        else:
+            self._data = value
+
+    @property
+    def is_z_score(self):
+        """True if the units of the data signal are in standard deviations."""
+        return self._is_z_score
+
+    @property
+    def is_dff(self):
+        return self._is_dff
+
+    @property
+    def is_positive_clipped(self):
+        return self._is_positive_clipped
+
+    @property
+    def cell_vec(self):
+        return self._cell_vec
+
+    def _unlock(self):
+        """Unlock Fluorescence object to allow modification.
+
+        Should only ever be called by Doorman.
+
+        """
+        self._data.flags.writeable = True
+        self.__locked = False
+
+    def _lock(self):
+        """Lock Fluorescence object to prevent accidental modification.
+
+        Should mainly be used by Doorman.
+
+        """
+        self._data.flags.writeable = False
+        self.__locked = True
 
     @property
     def num_timesteps(self):
@@ -514,7 +565,8 @@ class Fluorescence(TimeseriesDataset):
         else:
             time_slice = self.data[..., start:stop]
 
-        fluo_copy.data = time_slice.copy()
+        fluo_copy._data = time_slice.copy()
+
         return fluo_copy
 
     def time_mean(self, ignore_nan=False):
@@ -522,11 +574,11 @@ class Fluorescence(TimeseriesDataset):
         fluo_copy = self.copy(read_only=True)
 
         if ignore_nan:
-            fluo_copy.data = np.nanmean(
+            fluo_copy._data = np.nanmean(
                 fluo_copy.data, axis=fluo_copy.data.ndim - 1
             )[..., np.newaxis]
         else:
-            fluo_copy.data = np.mean(
+            fluo_copy._data = np.mean(
                 fluo_copy.data, axis=fluo_copy.data.ndim - 1
             )[..., np.newaxis]
 
@@ -537,11 +589,11 @@ class Fluorescence(TimeseriesDataset):
         fluo_copy = self.copy(read_only=True)
 
         if ignore_nan:
-            fluo_copy.data = np.nanstd(
+            fluo_copy._data = np.nanstd(
                 fluo_copy.data, axis=fluo_copy.data.ndim - 1
             )[..., np.newaxis]
         else:
-            fluo_copy.data = np.std(
+            fluo_copy._data = np.std(
                 fluo_copy.data, axis=fluo_copy.data.ndim - 1
             )[..., np.newaxis]
 
@@ -553,7 +605,7 @@ class Fluorescence(TimeseriesDataset):
         Parameters
         ----------
         read_only : bool, default False
-            Whether to get a read-only copy of the underlying `fluo` array.
+            Whether to get a read-only copy of the underlying `data` array.
             Getting a read-only copy is much faster and should be used if a
             large number of copies need to be created.
 
@@ -564,7 +616,7 @@ class Fluorescence(TimeseriesDataset):
             read_only_fluo = self.data.view()
             read_only_fluo.flags.writeable = False
 
-            deepcopy_memo = {id(self.data): read_only_fluo}
+            deepcopy_memo = {id(self._data): read_only_fluo}
             copy_ = deepcopy(self, deepcopy_memo)
         else:
             copy_ = deepcopy(self)
@@ -572,9 +624,10 @@ class Fluorescence(TimeseriesDataset):
         return copy_
 
     def _get_cells_from_mask(self, mask):
-        cell_subset = self.copy(read_only=False)
-        cell_subset.cell_vec = self.cell_vec[mask].copy()
-        cell_subset.data = self.data[..., mask, :].copy()
+        cell_subset = self.copy(read_only=True)
+
+        cell_subset._cell_vec = self.cell_vec[mask].copy()
+        cell_subset._data = self.data[..., mask, :].copy()
 
         assert cell_subset.data.ndim == self.data.ndim
         assert cell_subset.num_cells == np.sum(mask)
@@ -586,8 +639,11 @@ class Fluorescence(TimeseriesDataset):
         if self.is_positive_clipped:
             raise ValueError("Instance is already positive clipped.")
         fluo_copy = self.copy(read_only=False)
-        fluo_copy.data[fluo_copy.data < 0] = 0
-        fluo_copy.is_positive_clipped = True
+
+        with fluo_copy.unlock():
+            fluo_copy.data[fluo_copy.data < 0] = 0
+            fluo_copy._is_positive_clipped = True
+
         return fluo_copy
 
 
@@ -609,10 +665,12 @@ class RawFluorescence(Fluorescence):
         if self.is_z_score:
             raise ValueError("Instance is already a Z-score")
         else:
-            z_score = self.data - self.data.mean(axis=1)[:, np.newaxis]
-            z_score /= z_score.std(axis=1)[:, np.newaxis]
-            self.data = z_score
-            self.is_z_score = True
+            z_score = self.data - self.time_mean().data
+            z_score /= z_score.time_std().data
+
+            with self.unlock():
+                self.data = z_score
+                self._is_z_score = True
 
     def cut_by_trials(
         self,
@@ -691,8 +749,8 @@ class RawFluorescence(Fluorescence):
         trial_fluorescence = TrialFluorescence(
             np.asarray(trials), trial_num, self.timestep_width,
         )
-        trial_fluorescence.is_z_score = self.is_z_score
-        trial_fluorescence.is_dff = self.is_dff
+        trial_fluorescence._is_z_score = self.is_z_score
+        trial_fluorescence._is_dff = self.is_dff
         trial_fluorescence._baseline_duration = (
             num_baseline_frames * self.timestep_width
         )
@@ -794,8 +852,9 @@ class TrialFluorescence(Fluorescence, TrialDataset):
 
     def _get_trials_from_mask(self, mask):
         trial_subset = self.copy(read_only=True)
+
         trial_subset._trial_num = trial_subset._trial_num[mask].copy()
-        trial_subset.data = trial_subset.data[mask, ...].copy()
+        trial_subset._data = trial_subset.data[mask, ...].copy()
 
         return trial_subset
 
@@ -818,12 +877,13 @@ class TrialFluorescence(Fluorescence, TrialDataset):
 
         """
         trial_mean = self.copy(read_only=True)
+
         trial_mean._trial_num = np.asarray([np.nan])
 
         if ignore_nan:
-            trial_mean.data = np.nanmean(self.data, axis=0)[np.newaxis, :, :]
+            trial_mean._data = np.nanmean(self.data, axis=0)[np.newaxis, :, :]
         else:
-            trial_mean.data = self.data.mean(axis=0)[np.newaxis, :, :]
+            trial_mean._data = self.data.mean(axis=0)[np.newaxis, :, :]
 
         return trial_mean
 
@@ -847,17 +907,18 @@ class TrialFluorescence(Fluorescence, TrialDataset):
 
         """
         trial_std = self.copy(read_only=True)
+
         trial_std._trial_num = np.asarray([np.nan])
 
         if ignore_nan:
-            trial_std.data = np.nanstd(self.data, axis=0)[np.newaxis, :, :]
+            trial_std._data = np.nanstd(self.data, axis=0)[np.newaxis, :, :]
         else:
-            trial_std.data = self.data.std(axis=0)[np.newaxis, :, :]
+            trial_std._data = self.data.std(axis=0)[np.newaxis, :, :]
 
         return trial_std
 
 
-class EyeTracking(TimeseriesDataset):
+class EyeTracking(TimeseriesDataset, Unlockable):
     _DATA_MEMBER_NAMES = ["eye_area", "pupil_area", "x_pos_deg", "y_pos_deg"]
 
     def __init__(self, tracked_attributes: dict, timestep_width: float):
@@ -869,6 +930,7 @@ class EyeTracking(TimeseriesDataset):
 
         # Add `self.data` as a read-only interface to `_data`
         self.data = MappingProxyType(self._data)
+        self._lock()
 
         # Check that `_data` has been initialized properly and raise error if not
         try:
@@ -877,6 +939,24 @@ class EyeTracking(TimeseriesDataset):
             raise ValueError(
                 'Expected attributes in `tracked_attributes` to all have the same shape'
             )
+
+    def _unlock(self):
+        """Temporarily unlock self.
+
+        Should only ever be called by Doorman.
+
+        """
+        for key in self.data:
+            self.data[key].flags.writeable = True
+
+    def _lock(self):
+        """Lock self to prevent accidental modification.
+
+        Should mainly be called by Doorman.
+
+        """
+        for key in self.data:
+            self.data[key].flags.writeable = False
 
     def __copy__(self):
         """Return a shallow copy of self."""
@@ -912,6 +992,32 @@ class EyeTracking(TimeseriesDataset):
         if not all([shape_ == shapes[0] for shape_ in shapes]):
             raise RuntimeError('Not all data attributes have same length')
 
+    def copy(self, read_only=False):
+        """Get a deep copy.
+
+        Parameters
+        ----------
+        read_only : bool, default False
+            Whether to get a read-only copy of the underlying `data` arrays.
+            Getting a read-only copy is much faster and should be used if a
+            large number of copies need to be created.
+
+        """
+        if read_only:
+            # Get a read-only view of the data arrays
+            # This is much faster than creating a full copy
+            read_only_data = {}
+            for key in self.data:
+                read_only_data[key] = self.data[key].view()
+                read_only_data[key].flags.writeable = False
+
+            deepcopy_memo = {id(self._data): read_only_data}
+            copy_ = deepcopy(self, deepcopy_memo)
+        else:
+            copy_ = deepcopy(self)
+
+        return copy_
+
     @property
     def num_timesteps(self):
         """Number of timesteps in EyeTracking dataset."""
@@ -919,8 +1025,9 @@ class EyeTracking(TimeseriesDataset):
         return self.data["eye_area"].shape[-1]
 
     def get_frame_range(self, start: int, stop: int = None):
-        window = self.copy()
-        for key, val in self.data.values():
+        window = self.copy(read_only=True)
+
+        for key, val in window.data.values():
             if stop is None:
                 window._data[key] = np.atleast_1d(val[..., start])
             else:
@@ -932,14 +1039,14 @@ class EyeTracking(TimeseriesDataset):
 
     def time_mean(self, ignore_nan=False):
         """Mean of the eye tracking data for each time period."""
-        eyetracking_copy = self.copy()
+        eyetracking_copy = self.copy(read_only=True)
 
         if ignore_nan:
-            eyetracking_copy.data = np.nanmean(
+            eyetracking_copy._data = np.nanmean(
                 eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
             )[..., np.newaxis]
         else:
-            eyetracking_copy.data = np.mean(
+            eyetracking_copy._data = np.mean(
                 eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
             )[..., np.newaxis]
 
@@ -947,21 +1054,21 @@ class EyeTracking(TimeseriesDataset):
 
     def time_std(self, ignore_nan=False):
         """Standard deviation of the eye tracking data for each time period."""
-        eyetracking_copy = self.copy()
+        eyetracking_copy = self.copy(read_only=True)
 
         if ignore_nan:
-            eyetracking_copy.data = np.nanstd(
+            eyetracking_copy._data = np.nanstd(
                 eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
             )[..., np.newaxis]
         else:
-            eyetracking_copy.data = np.std(
+            eyetracking_copy._data = np.std(
                 eyetracking_copy.data, axis=eyetracking_copy.data.ndim - 1
             )[..., np.newaxis]
 
         return eyetracking_copy
 
 
-class RawEyeTracking(TimeseriesDataset):
+class RawEyeTracking(EyeTracking):
     def __init__(self, tracked_attributes: dict, timestep_width: float):
         super().__init__(tracked_attributes, timestep_width)
 
@@ -1161,7 +1268,8 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
         self._trial_num = np.asarray(trial_num)
 
     def _get_trials_from_mask(self, mask):
-        trial_subset = self.copy()
+        trial_subset = self.copy(read_only=True)
+
         trial_subset._trial_num = trial_subset._trial_num[mask].copy()
         for key in self.data.keys():
             np.atleast_2d(trial_subset._data[key][mask, :].copy())
@@ -1188,7 +1296,7 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
         `time_mean()`
 
         """
-        trial_mean = self.copy()
+        trial_mean = self.copy(read_only=True)
         trial_mean._trial_num = np.asarray([np.nan])
 
         if ignore_nan:
@@ -1225,7 +1333,7 @@ class TrialEyeTracking(EyeTracking, TrialDataset):
         `time_std()`
 
         """
-        trial_std = self.copy()
+        trial_std = self.copy(read_only=True)
         trial_std._trial_num = np.asarray([np.nan])
 
         if ignore_nan:
