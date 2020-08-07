@@ -164,7 +164,7 @@ class Orientation(_NamedOrderedSet):
         if self._member_value is None:
             result = np.nan
         else:
-            result = self._member_value / 360. * (2. * np.pi)
+            result = self._member_value / 360.0 * (2.0 * np.pi)
         return result
 
 
@@ -384,6 +384,18 @@ class CenterSurroundStimulus:
     def surround_is_empty(self):
         """Check whether the surround portion of the stimulus is empty."""
         return self.surround_orientation == Orientation(None)
+
+    def surround_is_ortho(self):
+        """Check whether the center and surround fields are orthogonal."""
+        return (not self.surround_is_empty()) and (
+            self.surround_orientation in self.center_orientation.orthogonal()
+        )
+
+    def surround_is_iso(self):
+        """Check whether the center and surround fileds have same angle."""
+        return (not self.surround_is_empty()) and (
+            self.surround_orientation == self.center_orientation
+        )
 
     def __repr__(self):
         return (
